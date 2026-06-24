@@ -2,68 +2,108 @@ from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 import yt_dlp
 import requests
+import random
 
 app = Flask(__name__)
 CORS(app)
 
+# Multiple user agents to rotate
+USER_AGENTS = [
+    'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
+    'com.google.android.youtube/19.08.35 (Linux; U; Android 12) gzip',
+    'com.google.android.youtube/19.10.38 (Linux; U; Android 13) gzip',
+]
+
 def get_video_info(video_id):
     url = f"https://www.youtube.com/watch?v={video_id}"
     
-    ydl_opts = {
-        'format': 'best[ext=mp4]/best[height<=720]/best',
-        'quiet': True,
-        'no_warnings': True,
-        'extract_flat': False,
-        'nocheckcertificate': True,
-        'geo_bypass': True,
-        'geo_bypass_country': 'IN',
-        # Anti-bot headers
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Linux; Android 11; Redmi Note 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-IN,en;q=0.9,hi;q=0.8',
-            'Accept-Encoding': 'gzip, deflate',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-        },
-        # Use Android client to bypass bot detection
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'web'],
-                'player_skip': ['webpage', 'configs'],
+    # Try multiple methods
+    methods = [
+        # Method 1: Android app client
+        {
+            'format': 'best[ext=mp4][height<=720]/best[ext=mp4]/best',
+            'quiet': True,
+            'no_warnings': True,
+            'nocheckcertificate': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android'],
+                }
+            },
+            'http_headers': {
+                'User-Agent': random.choice(USER_AGENTS),
             }
         },
-    }
+        # Method 2: iOS client
+        {
+            'format': 'best[ext=mp4][height<=720]/best',
+            'quiet': True,
+            'no_warnings': True,
+            'nocheckcertificate': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios'],
+                }
+            },
+        },
+        # Method 3: TV client
+        {
+            'format': 'best',
+            'quiet': True,
+            'no_warnings': True,
+            'nocheckcertificate': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['tv_embedded'],
+                }
+            },
+        },
+        # Method 4: mweb client
+        {
+            'format': 'best',
+            'quiet': True,
+            'no_warnings': True,
+            'nocheckcertificate': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['mweb'],
+                }
+            },
+        },
+    ]
     
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        
-        # Find best mp4 format
-        video_url = None
-        if 'formats' in info:
-            # Try to get direct mp4
-            for f in reversed(info['formats']):
-                if f.get('ext') == 'mp4' and f.get('url') and f.get('height', 0) <= 720:
-                    video_url = f['url']
-                    break
-            # Fallback to any format
-            if not video_url:
-                video_url = info['formats'][-1]['url']
-        
-        if not video_url:
-            video_url = info.get('url')
-        
-        return {
-            'video_url': video_url,
-            'title': info.get('title', ''),
-            'thumbnail': info.get('thumbnail', ''),
-            'duration': info.get('duration', 0),
-            'video_id': video_id
-        }
+    last_error = None
+    for opts in methods:
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                
+                video_url = None
+                if 'formats' in info:
+                    for f in reversed(info['formats']):
+                        if f.get('url') and f.get('vcodec') != 'none':
+                            video_url = f['url']
+                            break
+                if not video_url:
+                    video_url = info.get('url')
+                
+                if video_url:
+                    return {
+                        'video_url': video_url,
+                        'title': info.get('title', ''),
+                        'thumbnail': info.get('thumbnail', ''),
+                        'duration': info.get('duration', 0),
+                        'video_id': video_id
+                    }
+        except Exception as e:
+            last_error = str(e)
+            continue
+    
+    raise Exception(f"सभी methods failed: {last_error}")
 
 @app.route('/')
 def home():
-    return jsonify({'status': 'BharatTube Server Running!', 'version': '2.0'})
+    return jsonify({'status': 'BharatTube Server Running!', 'version': '3.0'})
 
 @app.route('/api/video')
 def get_video():
@@ -90,7 +130,7 @@ def proxy_video():
     if 'Range' in request.headers:
         headers['Range'] = request.headers['Range']
     
-    resp = requests.get(video_url, headers=headers, stream=True, timeout=30)
+    resp = requests.get(video_url, headers=headers, stream=True, timeout=60)
     
     def generate():
         for chunk in resp.iter_content(chunk_size=65536):
